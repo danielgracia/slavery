@@ -16,7 +16,7 @@ module Slavery
 
   class Error < StandardError; end
 
-  mattr_accessor :disabled, :env, :spec_key
+  mattr_accessor :disabled, :env, :spec_key, :retries
 
   class << self
     def spec_key
@@ -24,6 +24,13 @@ module Slavery
       when String   then @@spec_key
       when Proc     then @@spec_key = @@spec_key.call
       when NilClass then @@spec_key = "#{Slavery.env}_slave"
+      end
+    end
+
+    def retries
+      case @@retries
+      when Integer  then @@retries
+      when NilClass then @@retries = 3
       end
     end
 
@@ -79,8 +86,23 @@ module Slavery
       connection_without_slavery
     end
 
+    # TODO: kill this fork
+    # Workaround for dying connections with PostgreSQL and EY replication
     def slave_connection
-      slave_connection_holder.connection_without_slavery
+      attempts = 0
+
+      begin
+        slave_connection_holder.connection_without_slavery
+      rescue ActiveRecord::ConnectionNotEstablished
+        if attempts = Slavery.retries
+          raise
+        else
+          attempts += 1
+        end
+
+        remove_current_slave_connection!
+        retry
+      end
     end
 
     # Create an anonymous AR class to hold slave connection
@@ -98,6 +120,11 @@ module Slavery
 
         establish_connection spec.to_sym
       }
+    end
+
+    def remove_current_slave_connection!
+      @slave_connection_holder.remove_connection
+      @slave_connection_holder = nil
     end
   end
 end
